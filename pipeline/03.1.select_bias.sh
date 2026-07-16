@@ -1,4 +1,15 @@
 #!/bin/bash
+#SBATCH --job-name=select_bias
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=2
+#SBATCH --time=1:00:00
+#SBATCH --partition=normal,engreitz
+#SBATCH --output=%x_%j.log
+#SBATCH --error=%x_%j.log
+
+# Runs bias model selection for all datasets. No DATASET_DIR needed; datasets
+# are iterated internally. Update fold_bias_suffix in each dataset_config.sh
+# after reviewing the output plots.
 
 datasets_path="/oak/stanford/groups/engreitz/Users/opushkar/igvf_tf_collab"
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"

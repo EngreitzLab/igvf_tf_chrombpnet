@@ -8,6 +8,9 @@
 #SBATCH --error=%x_%j.log
 
 # 10.motif_compendium.sh
+# Run once after step 08 has completed for all datasets. No DATASET_DIR needed;
+# all dataset MoDISco H5s are discovered from the shared results path in config.sh.
+#
 # Purpose: Build a non-redundant motif compendium from per-dataset averaged MoDISco
 #          H5 files using MotifCompendium (Kundaje lab).
 #

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Plot combined full-model QC metrics for all four datasets side by side.
-# Run after 04.1.qc_run_full_model.sh has been executed for each dataset.
+# Run once after 04.1.qc_run_full_model.sh has completed for all datasets.
+# No DATASET_DIR needed; datasets are hardcoded below.
 #SBATCH --job-name=model_qc_combined
 #SBATCH --mem=8G
 #SBATCH --time=0:30:00
