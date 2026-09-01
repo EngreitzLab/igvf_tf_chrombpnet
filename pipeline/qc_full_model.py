@@ -76,7 +76,13 @@ NARROWPEAK_SCHEMA = [
     "summit",
 ]
 
-dataset_COLORS = ["#A6A6A6", "#D3C72F", "#D37739", "#9B3A48", "#CD7986"]
+DATASET_COLORS = {
+    "d0": "#A6A6A6",
+    "d1": "#D3C72F",
+    "d2": "#D37739",
+    "d3": "#9B3A48",
+    "d4": "#CD7986",
+}
 
 DATASET_LABELS = {
     "igvf11_h7_hesc": "igvf11_h7_hesc",
@@ -174,7 +180,7 @@ def load_pred_obs_counts(
 # %%
 def box_with_points(ax, labels, group_values, ylabel, title, ylim=None):
     """Boxplot with jittered per-fold points overlaid."""
-    colors = [dataset_COLORS[i] for i, lbl in enumerate(labels)]
+    colors = [DATASET_COLORS.get(lbl, "#888888") for lbl in labels]
     x = np.arange(1, len(labels) + 1)
 
     bp = ax.boxplot(
@@ -204,19 +210,21 @@ def box_with_points(ax, labels, group_values, ylabel, title, ylim=None):
             rasterized=True,
         )
         median_val = np.median(vals)
+        text_transform = transforms.blended_transform_factory(ax.transData, ax.transAxes)
         ax.text(
             xi,
-            max(vals) + 0.01,
+            1.0,
             f"median={median_val:.2f}\nn={len(vals)}",
             ha="center",
             va="bottom",
-            fontsize=7,
+            fontsize=10,
+            transform=text_transform,
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=12)
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, fontsize=12)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     if ylim:
         ax.set_ylim(*ylim)
 
