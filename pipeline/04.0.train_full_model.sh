@@ -2,24 +2,27 @@
 #SBATCH --job-name=full_model_selected
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --time=2-0
 #SBATCH --partition=gpu,owners
 #SBATCH --array=0-4
 
-# 05.train_full_model.sh
+# 04.0.train_full_model.sh
 # Purpose: Train the bias-factorised ChromBPNet full model for all datasets and
-#          folds, using the per-fold optimal bias model selected in step 04
-#          (04.0.select_bias_model.py). Each fold uses the bias suffix recorded
-#          in fold_bias_suffix in config.sh.
+#          folds, using the per-fold optimal bias model selected in step 03
+#          (03.1.select_bias.sh / select_bias_model.py). Each fold uses the
+#          bias suffix recorded in fold_bias_suffix in dataset_config.sh.
 #
-# Output directory: ${full_model_dir} (set in config.sh)
+# Output directory: ${full_model_dir_selected} (set in config.sh)
 #
 # Usage:
+#   export DATASET_DIR=/path/to/igvf_tf_collab/<dataset>
 #   sbatch 04.0.train_full_model.sh            # all folds (array 0-4)
 #   sbatch --array=0 04.0.train_full_model.sh  # fold 0 only
 #
-# Prerequisites: 03.0.train_bias_model.sh must have completed for all folds.
+# Prerequisites: 03.0.train_bias_model.sh, 03.1.select_bias.sh, and
+#   03.2.qc_selected_bias.sh must have completed for all folds. Bias suffixes
+#   must be set in dataset_config.sh.
 
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "${SCRIPT_DIR}/config.sh"
@@ -29,7 +32,7 @@ fold="${folds[${SLURM_ARRAY_TASK_ID}]}"
 
 suffix="${fold_bias_suffix[${fold}]}"
 if [[ -z "${suffix}" ]]; then
-    echo "ERROR: No bias suffix defined for fold ${fold} in fold_bias_suffix (config.sh)." >&2
+    echo "ERROR: No bias suffix defined for fold ${fold} in fold_bias_suffix (dataset_config.sh)." >&2
     exit 1
 fi
 
@@ -52,24 +55,25 @@ ml cudnn/8.6.0.163
 source "${CONDA_INIT}"
 conda activate "${CONDA_ENV}"
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 export TF_FORCE_GPU_ALLOW_GROWTH=true
 
 echo "[$(date)] Fold ${fold}: training full models (bias suffix ${suffix})"
 echo "  bias model : ${bias_model}"
 echo "  output dir : ${full_model_dir_selected}"
 
-echo ${datasets}
 for dataset in "${datasets[@]}"; do
     out_dir="${full_model_dir_selected}/${dataset}_${peak_type}_fold_${fold}"
     model_file="${out_dir}/models/chrombpnet_nobias.h5"
+    # Last file written by the pipeline's evaluation stage; absence means
+    # training finished (model_file exists) but evaluation was cut short,
+    # e.g. by preemption.
+    eval_marker="${out_dir}/evaluation/chrombpnet_nobias_profile.pdf"
 
-    if [[ -f "${model_file}" ]]; then
+    if [[ -f "${model_file}" && -f "${eval_marker}" ]]; then
         echo "  [${dataset} fold ${fold}] Already done, skipping."
         continue
     fi
-
-    mkdir -p "${out_dir}"
 
     fragments_file="${fragments_path}/${dataset}_atac_fragments_main_chrs.tsv.gz"
     peaks_file="${data_path}/${dataset}_${peak_type}_peaks_no_blacklist.narrowPeak"
@@ -77,8 +81,11 @@ for dataset in "${datasets[@]}"; do
     fold_json="${folds_dir}/fold_${fold}.json"
 
     for f in "${fragments_file}" "${peaks_file}" "${negatives_file}" "${fold_json}"; do
-        [[ -f "${f}" ]] || { echo "  [${dataset} fold ${fold}] Missing input: ${f}" >&2; continue 2; }
+        [[ -f "${f}" ]] || { echo "  [${dataset} fold ${fold}] Missing input: ${f}" >&2; exit 1; }
     done
+
+    rm -rf "${out_dir}"
+    mkdir -p "${out_dir}"
 
     echo "[$(date)] [${dataset} fold ${fold}] Training full model (bias ${suffix})..."
 
