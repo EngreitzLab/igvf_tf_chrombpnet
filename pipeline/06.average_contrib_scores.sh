@@ -18,11 +18,18 @@
 #      this noise and gives a more robust signal for motif discovery.
 #      This follows the Greenleaf lab approach (their step 05-average_deepshaps).
 #
+# score_types below controls which contribution head(s) get (re-)averaged.
+#   Counts was already run previously; it is left out here so reruns of
+#   this script do not touch counts.h5. average_contrib_scores.py also
+#   skips a score-type if its output already exists, so re-adding "counts"
+#   to score_types later is safe and will not recompute it.
+#
 # Input:  ${full_model_dir}/{dataset}_{peak_type}_fold_{0..4}/interpretation/
-#             interpretation.counts_scores.h5  (step 05 output)
-# Output: ${averaged_dir}/{dataset}/{dataset}_average_shaps.counts.h5
+#             interpretation.{score_type}_scores.h5  (step 05 output)
+# Output: ${averaged_dir}/{dataset}/{dataset}_average_shaps.{score_type}.h5
 #
 # Usage:
+#   export DATASET_DIR=/path/to/igvf_tf_collab/<dataset>
 #   sbatch 06.average_contrib_scores.sh            # all datasets (array 0-4)
 #   sbatch --array=0 06.average_contrib_scores.sh  # dataset 0 only
 #
@@ -35,17 +42,23 @@ source "${SCRIPT_DIR}/config.sh"
 dataset="${datasets[${SLURM_ARRAY_TASK_ID}]}"
 [[ -z "${dataset}" ]] && { echo "No dataset at array index ${SLURM_ARRAY_TASK_ID}, exiting."; exit 0; }
 
+score_types=("profile")  # counts already done; add "counts" here to redo/extend
+
 out_dir="${averaged_dir}/${dataset}"
 mkdir -p "${out_dir}" "${log_dir}"
 
 source "${CONDA_INIT}"
 conda activate "${CONDA_ENV}"
 
-python "${SCRIPT_DIR}/average_contrib_scores.py" \
-    --dataset "${dataset}" \
-    --folds "${folds[@]}" \
-    --full-model-dir "${full_model_dir_selected}" \
-    --peak-type "${peak_type}" \
-    --out-dir "${out_dir}"
+for score_type in "${score_types[@]}"; do
+    echo "[$(date)] [${dataset} ${score_type}] Averaging contribution scores..."
+    python "${SCRIPT_DIR}/average_contrib_scores.py" \
+        --dataset "${dataset}" \
+        --folds "${folds[@]}" \
+        --full-model-dir "${full_model_dir_selected}" \
+        --peak-type "${peak_type}" \
+        --score-type "${score_type}" \
+        --out-dir "${out_dir}"
+done
 
 echo "Done"
