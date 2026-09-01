@@ -2,32 +2,45 @@
 #SBATCH --job-name=bias_sweep
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --time=2-0
 #SBATCH --partition=gpu,owners
-#SBATCH --array=0-4
+#SBATCH --array=0-19
 #SBATCH --output=%x_%j.log
 #SBATCH --error=%x_%j.log
 
 # 03.0.train_bias_model.sh
 # Purpose: Train Tn5 bias models for a sweep of bias threshold factors on
-#          bias_dataset (defined in config.sh). One SLURM array job per fold;
-#          each job trains all bias_factors sequentially for that fold.
+#   bias_dataset (defined in dataset_config.sh), then compute fast QC metrics
+#   (counts/profile Pearson r, JSD) for each - the metrics select_bias_model.py
+#   (03.1) needs to pick a winner per fold. Deliberately skips the expensive
+#   interpretation + TF-MoDISco QC (that only runs on the selected bias model,
+#   in 03.2.qc_selected_bias.sh) - running it on every fold x factor combo is
+#   what made this step slow before.
 #
-# The resulting bias models are evaluated with 04.1.qc_bias_selection.py, then the
-# best factor per fold is recorded in fold_bias_suffix in config.sh.
+#   Array index maps to fold x bias_factor: task_id = fold_idx * n_factors + factor_idx
+#     e.g. with 4 bias_factors: tasks 0-3 = fold 0, tasks 4-7 = fold 1, etc.
+#   --array default (0-19) assumes 5 folds x 4 factors; override for datasets
+#   with a different bias_factors length (e.g. igvf11_h7_hesc has 6 -> 0-29).
 #
 # Usage:
-#   sbatch 03.0.train_bias_model.sh            # all folds (array 0-4)
-#   sbatch --array=0 03.0.train_bias_model.sh  # fold 0 only (quick test)
+#   export DATASET_DIR=/path/to/igvf_tf_collab/<dataset>
+#   sbatch 03.0.train_bias_model.sh              # all folds x factors
+#   sbatch --array=0 03.0.train_bias_model.sh    # fold 0, first bias factor only (quick test)
 #
-# After all jobs complete, run 03.1.select_bias.qsh then 04.0.train_full_model.sh.
+# After all jobs complete, run 03.1.select_bias.sh, then 03.2.qc_selected_bias.sh,
+# then 04.0.train_full_model.sh.
 
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "${SCRIPT_DIR}/config.sh"
 
-fold="${folds[${SLURM_ARRAY_TASK_ID}]}"
-[[ -z "${fold}" ]] && { echo "No fold at array index ${SLURM_ARRAY_TASK_ID}, exiting."; exit 0; }
+n_factors=${#bias_factors[@]}
+fold_idx=$(( SLURM_ARRAY_TASK_ID / n_factors ))
+factor_idx=$(( SLURM_ARRAY_TASK_ID % n_factors ))
+fold="${folds[$fold_idx]}"
+bf="${bias_factors[$factor_idx]}"
+suffix="${bias_suffixes_sweep[$factor_idx]}"
+[[ -z "${fold}" || -z "${bf}" ]] && { echo "Invalid array index ${SLURM_ARRAY_TASK_ID}, exiting."; exit 0; }
 
 ml devel
 ml system
@@ -39,7 +52,7 @@ ml cudnn/8.6.0.163
 source "${CONDA_INIT}"
 conda activate "${CONDA_ENV}"
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 export TF_FORCE_GPU_ALLOW_GROWTH=true
 
 fragments_file="${fragments_path}/${bias_dataset}_atac_fragments_main_chrs.tsv.gz"
@@ -47,24 +60,23 @@ peaks_file="${data_path}/${bias_dataset}_${peak_type}_peaks_no_blacklist.narrowP
 negatives_file="${data_path}/${bias_dataset}/output_${peak_type}_fold_${fold}_negatives.bed"
 fold_json="${folds_dir}/fold_${fold}.json"
 file_prefix="${bias_dataset}_${peak_type}_fold_${fold}"
+out_dir="${results_path}/bias_models/bias_model${suffix}/${bias_dataset}_${peak_type}_fold_${fold}"
+model_file="${out_dir}/models/${file_prefix}_bias.h5"
 
-echo "[$(date)] Fold ${fold}: starting bias factor sweep: ${bias_factors[*]}"
+echo "[$(date)] [fold ${fold} bias=${bf}] Training bias model"
+echo "  output dir : ${out_dir}"
 
-for bf in "${bias_factors[@]}"; do
-    # Derive suffix: 0.8 -> _08, 0.5 -> _05, 0.65 -> _065, etc.
-    suffix="_$(echo "${bf}" | tr -d '.')"
-    out_dir="${results_path}/bias_models/bias_model${suffix}/${bias_dataset}_${peak_type}_fold_${fold}"
-    model_file="${out_dir}/models/${file_prefix}_bias.h5"
+if [[ -f "${model_file}" ]]; then
+    echo "  Model already trained, skipping training."
+else
+    for f in "${fragments_file}" "${peaks_file}" "${negatives_file}" "${fold_json}"; do
+        [[ -f "${f}" ]] || { echo "  Missing input: ${f}" >&2; exit 1; }
+    done
 
-    if [[ -f "${model_file}" ]]; then
-        echo "  [bias=${bf}] Already done, skipping: ${model_file}"
-        continue
-    fi
-
+    rm -rf "${out_dir}"
     mkdir -p "${out_dir}"
-    echo "[$(date)] [fold ${fold} bias=${bf}] Training..."
 
-    chrombpnet bias pipeline \
+    chrombpnet bias train \
         -ifrag "${fragments_file}" \
         -d "ATAC" \
         -g "${genome_fa}" \
@@ -76,7 +88,19 @@ for bf in "${bias_factors[@]}"; do
         -o "${out_dir}" \
         -fp "${file_prefix}"
 
-    echo "[$(date)] [fold ${fold} bias=${bf}] Done."
-done
+    if [[ $? -ne 0 || ! -f "${model_file}" ]]; then
+        echo "ERROR: chrombpnet bias train failed for fold ${fold} bias=${bf} (bias threshold factor may be too low/high for this fold - see stdout above)." >&2
+        exit 1
+    fi
+fi
 
-echo "[$(date)] Fold ${fold}: bias sweep complete."
+echo "[$(date)] [fold ${fold} bias=${bf}] Computing fast QC metrics."
+
+python "${SCRIPT_DIR}/predict_bias_metrics.py" \
+    --bias-model "${model_file}" \
+    --output-dir "${out_dir}" \
+    --file-prefix "${file_prefix}" \
+    --genome "${genome_fa}" \
+    --fold-json "${fold_json}"
+
+echo "[$(date)] [fold ${fold} bias=${bf}] Done."
