@@ -72,6 +72,14 @@ NONPEAKS_PEARSONR_PASS = 0.0
 PEAKS_PEARSONR_WARN = -0.3
 PEAKS_PEARSONR_FAIL = -0.5
 
+# ── tie-break tolerances for select_best() ──────────────────────────────────────
+# Candidates within this fraction of the top norm-JSD score are treated as tied
+# (norm JSD is sensitive to read depth, so small differences aren't meaningful).
+NORM_JSD_SCORE_TIE_REL_EPS = 0.02
+# |peaks pearsonr| values within this of each other are treated as "both close
+# enough to 0" and don't discriminate between tied candidates.
+PEAKS_PEARSONR_NEAR_ZERO_EPS = 0.05
+
 BIAS_COLORS = {
     "05": "#4393C3",
     "06": "#4C72B0",
@@ -144,19 +152,50 @@ def classify_row(row) -> str:
 
 
 def select_best(group: pd.DataFrame) -> str:
-    """Given all bias models for one fold, return the best bias string."""
+    """Given all bias models for one fold, return the best bias string.
+
+    Ranks by norm-JSD score first. When candidates land within
+    NORM_JSD_SCORE_TIE_REL_EPS of the top score (a tie, given norm JSD's
+    known read-depth sensitivity), breaks the tie in three steps:
+      1. Prefer candidates with peaks pearsonr <= nonpeaks pearsonr. The
+         bias model is trained (and validated) on nonpeaks only, so peaks
+         pearsonr is an out-of-domain generalization check; if it exceeds
+         the in-domain nonpeaks pearsonr, the model is fitting something
+         peak-specific (real accessibility signal), not just Tn5 bias.
+      2. Among the survivors, prefer |peaks pearsonr| closest to 0 - unless
+         the closest candidates are themselves within
+         PEAKS_PEARSONR_NEAR_ZERO_EPS of each other, in which case |pk_r|
+         isn't discriminating (both are "close enough to 0") and step 3
+         decides instead.
+      3. Among candidates near-tied on |pk_r|, prefer higher nonpeaks
+         pearsonr - the model with the better in-domain (nonpeaks) fit wins.
+    """
     group = group.copy()
     group["status"] = group.apply(classify_row, axis=1)
+    group["norm_jsd_score"] = group["peaks_median_norm_jsd"] - group[
+        "peaks_median_jsd"
+    ] / 100
 
     for tier in ("pass", "warn", "fail"):
         candidates = group[group["status"] == tier]
-        if not candidates.empty:
-            idx = (
-                candidates["peaks_median_norm_jsd"]
-                .sub(candidates["peaks_median_jsd"] / 100)
-                .idxmax()
-            )
-            return candidates.loc[idx, "bias"]
+        if candidates.empty:
+            continue
+        best_score = candidates["norm_jsd_score"].max()
+        tied = candidates[
+            candidates["norm_jsd_score"]
+            >= best_score * (1 - NORM_JSD_SCORE_TIE_REL_EPS)
+        ]
+        healthy = tied[tied["peaks_pearsonr"] <= tied["nonpeaks_pearsonr"]]
+        pool = healthy if not healthy.empty else tied
+
+        abs_pk_r = pool["peaks_pearsonr"].abs()
+        near_zero = pool[abs_pk_r <= abs_pk_r.min() + PEAKS_PEARSONR_NEAR_ZERO_EPS]
+        idx = (
+            near_zero["nonpeaks_pearsonr"].idxmax()
+            if len(near_zero) > 1
+            else abs_pk_r.idxmin()
+        )
+        return pool.loc[idx, "bias"]
     return group["bias"].iloc[0]
 
 
