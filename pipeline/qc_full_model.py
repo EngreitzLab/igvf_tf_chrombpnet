@@ -76,14 +76,6 @@ NARROWPEAK_SCHEMA = [
     "summit",
 ]
 
-DATASET_COLORS = {
-    "d0": "#A6A6A6",
-    "d1": "#D3C72F",
-    "d2": "#D37739",
-    "d3": "#9B3A48",
-    "d4": "#CD7986",
-}
-
 DATASET_LABELS = {
     "igvf11_h7_hesc": "igvf11_h7_hesc",
     "igvf3_cardiomyocyte": "igvf3_cardiomyocyte",
@@ -96,6 +88,11 @@ DATASET_COLORS_COMBINED = {
     "igvf6_definitive_endoderm": "#55A868",
     "igvf_endothelial": "#9B3A48",
 }
+# Used by box_with_points() for the per-dataset/per-fold QC plots (04.1), where
+# labels are real dataset directory names (igvf3_cardiomyocyte, etc.) - not the
+# "d0".."d4" day labels multiome_ipsc_ec uses. Reuses DATASET_COLORS_COMBINED's
+# palette so per-dataset and cross-dataset plots are visually consistent.
+DATASET_COLORS = DATASET_COLORS_COMBINED
 
 
 # %%
