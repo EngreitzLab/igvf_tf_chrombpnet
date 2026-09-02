@@ -9,9 +9,9 @@
 #SBATCH --output=%x_%j.log
 #SBATCH --error=%x_%j.log
 
-# 11.run_finemo_unified.sh
+# 10.run_finemo_unified.sh
 # Purpose: Call motif hits using the unified (compendium) MoDISco H5.
-#          Uses modisco_compiled.h5 built in step 11 and fold-averaged
+#          Uses modisco_compiled.h5 built in step 09 and fold-averaged
 #          contribution scores (step 07) so that a single hit set per
 #          dataset is produced, enabling direct cross-dataset comparisons.
 #
@@ -19,7 +19,7 @@
 #
 # Input per dataset:
 #   {averaged_dir}/{dataset}/{dataset}_average_shaps.counts.h5  – averaged DeepLIFT scores (step 07)
-#   modisco_compiled.h5                                 – unified MoDISco patterns (step 11)
+#   modisco_compiled.h5                                 – unified MoDISco patterns (step 09)
 #
 # Output (inside finemo_unified_dir/{dataset}_{peak_type}/):
 #   hits.bed.gz + hits.bed.gz.tbi     – tabix-indexed hit calls
@@ -27,10 +27,11 @@
 #   finemo_report/                    – HTML report
 #
 # Usage:
-#   sbatch 11.run_finemo_unified.sh            # dataset 0
-#   sbatch 11.run_finemo_unified.sh            # (override with --array=0 if needed)
+#   sbatch 10.run_finemo_unified.sh            # dataset 0
+#   sbatch 10.run_finemo_unified.sh            # all datasets (array 0-4)
+#   sbatch --array=0 10.run_finemo_unified.sh   # dataset 0 only (override with --array=0 if needed)
 #
-# Prerequisites: steps 06 and 10 must have completed.
+# Prerequisites: steps 06 and 09 must have completed.
 #   Requires the 'finemo' conda environment.
 
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -39,9 +40,12 @@ source "${SCRIPT_DIR}/config.sh"
 dataset="${datasets[${SLURM_ARRAY_TASK_ID}]}"
 [[ -z "${dataset}" ]] && { echo "No dataset at array index ${SLURM_ARRAY_TASK_ID}, exiting."; exit 0; }
 
-compiled_h5="${modisco_compiled_dir}/modisco_compiled.h5"
+# Use the cross-dataset compendium built by 09.cross_dataset_compendium.sh,
+# not the per-dataset one in ${modisco_compiled_dir}.
+collab_dir="$(dirname "${SCRIPT_DIR}")"
+compiled_h5="${collab_dir}/results/compendium/modisco_compiled/modisco_compiled.h5"
 if [[ ! -f "${compiled_h5}" ]]; then
-    echo "ERROR: ${compiled_h5} not found. Run 11.motif_compendium.sh first." >&2
+    echo "ERROR: ${compiled_h5} not found. Run 09.cross_dataset_compendium.sh first." >&2
     exit 1
 fi
 
@@ -58,10 +62,22 @@ export CUDA_VISIBLE_DEVICES=0
 export TF_FORCE_GPU_ALLOW_GROWTH=true
 
 counts_h5="${averaged_dir}/${dataset}/${dataset}_average_shaps.counts.h5"
-peaks_file="${data_path}/${dataset}_${peak_type}_peaks_no_blacklist.narrowPeak"
+
+# Use the filtered peak list chrombpnet itself wrote during step 05
+# (interpretation.interpreted_regions.bed), not the raw *_peaks_no_blacklist.narrowPeak.
+# chrombpnet's contribs_bw silently drops peaks whose input window runs off a
+# chromosome end (e.g. chrM), so the averaged H5 in step 06/07 has fewer regions
+# than the raw peaks file. All folds filter identically (same peaks + genome), so
+# fold 0's interpreted_regions.bed matches the H5 row-for-row.
+peaks_file="${full_model_dir_selected}/${dataset}_${peak_type}_fold_${folds[0]}/interpretation/interpretation.interpreted_regions.bed"
 
 if [[ ! -f "${counts_h5}" ]]; then
     echo "ERROR: ${counts_h5} not found. Run 06.average_contrib_scores.sh first." >&2
+    exit 1
+fi
+
+if [[ ! -f "${peaks_file}" ]]; then
+    echo "ERROR: ${peaks_file} not found. Run 05.get_contrib_scores.sh first." >&2
     exit 1
 fi
 
@@ -83,6 +99,10 @@ finemo extract-regions-chrombpnet-h5 \
     --peaks        "${peaks_file}" \
     --out-path     "${finemo_npz}" \
     --region-width 1000
+if [[ $? -ne 0 ]]; then
+    echo "ERROR: [${dataset}] extract-regions-chrombpnet-h5 failed." >&2
+    exit 1
+fi
 
 echo "[$(date)] [${dataset}] Calling hits (unified modisco)..."
 
@@ -92,6 +112,10 @@ finemo call-hits \
     -l "${finemo_alpha}" \
     -o "${out_dir}" \
     -b 200
+if [[ $? -ne 0 ]]; then
+    echo "ERROR: [${dataset}] call-hits failed." >&2
+    exit 1
+fi
 
 if [[ -f "${out_dir}/hits.bed" ]]; then
     echo "[$(date)] [${dataset}] Compressing and indexing hits..."
